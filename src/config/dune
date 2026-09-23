@@ -1,0 +1,6 @@
+; Build-time configurator. Uses pkg-config to discover HiGHS, then emits
+; dune (:include) flag files for the library rule to pick up.
+
+(executable
+ (name discover)
+ (libraries dune-configurator))

@@ -1,0 +1,3 @@
+(executables
+ (names lp knapsack)
+ (libraries highs))

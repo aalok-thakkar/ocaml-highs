@@ -1,0 +1,20 @@
+; ocaml-highs library.
+;
+; Three-layer binding:
+;   highs.{ml,mli}   public OCaml API
+;   highs_stubs.c    calls the HiGHS C API directly
+;   libhighs         installed system-wide (brew, apt, or built from source)
+
+(library
+ (name highs)
+ (public_name highs)
+ (foreign_stubs
+  (language c)
+  (names highs_stubs)
+  (flags (:standard -O2 -Wno-unused-function (:include c_flags.sexp))))
+ (c_library_flags (:include c_library_flags.sexp)))
+
+(rule
+ (targets c_flags.sexp c_library_flags.sexp)
+ (deps (universe))
+ (action (run %{dep:config/discover.exe})))

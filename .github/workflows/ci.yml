@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / OCaml ${{ matrix.ocaml-compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ocaml-compiler: ["4.14", "5.1", "5.2"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install HiGHS (macOS)
+        if: runner.os == 'macOS'
+        run: brew install highs
+
+      - name: Install HiGHS (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential pkg-config
+          git clone --depth 1 --branch v1.11.0 https://github.com/ERGO-Code/HiGHS.git /tmp/HiGHS
+          cd /tmp/HiGHS
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          pkg-config --modversion highs
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.ocaml-compiler }}
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Run tests
+        run: opam exec -- dune runtest
+
+      - name: Run examples (smoke)
+        run: |
+          opam exec -- dune exec examples/lp.exe
+          opam exec -- dune exec examples/knapsack.exe

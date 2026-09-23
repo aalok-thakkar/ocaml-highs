@@ -1,0 +1,10 @@
+# Additional metadata merged into highs.opam on top of what dune-project
+# generates. Depexts tell opam how to install the HiGHS C library through
+# the host package manager.
+
+depexts: [
+  ["highs"] {os-family = "homebrew"}
+  ["highs"] {os-family = "arch"}
+  ["libhighs-dev"] {os-family = "debian"}
+  ["highs"] {os-distribution = "nixos"}
+]
