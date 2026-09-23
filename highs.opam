@@ -33,11 +33,11 @@ homepage: "https://github.com/aalok-thakkar/ocaml-highs"
 doc: "https://aalok-thakkar.github.io/ocaml-highs"
 bug-reports: "https://github.com/aalok-thakkar/ocaml-highs/issues"
 depends: [
-  "ocaml" {>= "4.14"}
+  "ocaml" {>= "5.1"}
   "dune" {>= "3.7" & >= "3.7"}
   "dune-configurator"
-  "base"
-  "ppx_jane"
+  "base" {>= "v0.17"}
+  "ppx_jane" {>= "v0.17"}
   "core" {>= "v0.17" & with-test}
   "expect_test_helpers_core" {>= "v0.17" & with-test}
   "odoc" {with-doc}

@@ -34,11 +34,11 @@ Features in 0.1.0:\n\
 \n\
 Requires HiGHS 1.11 or later, discoverable via pkg-config.")
  (depends
-  (ocaml (>= 4.14))
+  (ocaml (>= 5.1))
   (dune (>= 3.7))
   dune-configurator
-  base
-  ppx_jane
+  (base (>= v0.17))
+  (ppx_jane (>= v0.17))
   (core (and (>= v0.17) :with-test))
   (expect_test_helpers_core (and (>= v0.17) :with-test))
   (odoc :with-doc))
