@@ -17,10 +17,10 @@
             Highs.continuous ~name:"meat"  ~cost:0.7 ~lower:0.0 ();
           |]
           ~constraints:[|
-            Highs.geq ~name:"protein" ~rhs:50.0
-              ~terms:[(4.0, 0); (8.0, 1); (20.0, 2)];
-            Highs.geq ~name:"calcium" ~rhs:30.0
-              ~terms:[(2.0, 0); (12.0, 1); (3.0, 2)];
+            Highs.geq ~name:"protein"
+              ~terms:[(4.0, 0); (8.0, 1); (20.0, 2)] ~rhs:50.0 ();
+            Highs.geq ~name:"calcium"
+              ~terms:[(2.0, 0); (12.0, 1); (3.0, 2)] ~rhs:30.0 ();
           |]
           ()
       in
@@ -70,7 +70,7 @@ val continuous :
   ?name:string -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> var
 
 val integer :
-  ?name:string -> ?lower:int -> ?upper:int -> ?cost:float -> unit -> var
+  ?name:string -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> var
 
 val binary : ?name:string -> ?cost:float -> unit -> var
 
