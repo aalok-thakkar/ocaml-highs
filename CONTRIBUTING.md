@@ -7,12 +7,12 @@ src/
 ├── config/discover.ml     pkg-config probe
 ├── config/dune
 ├── dune
-├── highs.ml + .mli        pure records + solve
+├── highs.ml + .mli        module-per-type API + derivers via ppx_jane
 └── highs_stubs.c          direct calls into highs_c_api.h
 
-test/                       alcotest suite (real HiGHS backend)
+test/                       inline expect tests (ppx_expect via ppx_jane)
 examples/                   lp.ml, knapsack.ml
-docs/design.md              lifetime, marshalling, status mapping notes
+docs/design.md              lifetime, marshalling, module structure notes
 ```
 
 ## Build
@@ -25,69 +25,58 @@ dune runtest
 dune exec examples/knapsack.exe
 ```
 
-If HiGHS is not in a standard pkg-config location:
+If HiGHS is in a non-standard location:
 
 ```sh
 export HIGHS_CFLAGS="-I/path/to/include"
 export HIGHS_LIBS="-L/path/to/lib -lhighs"
 ```
 
-## API guardrails
+## Style
 
-The public API is functional. New features should keep that.
+Jane Street conventions:
 
-- Model-building functions are pure OCaml. They return a `constr`,
-  `var`, or `model` value; they never touch HiGHS.
-- The only function that talks to HiGHS is `solve` (and `write`, which
-  builds a temporary handle just for `Highs_writeModel`).
-- Do not expose the internal `Ffi.handle` type. It is intentionally
-  private.
-
-If you find yourself wanting a "builder that mutates in place",
-consider whether the same shape can be expressed as
-`{ model with constraints = Array.append ... }`.
+- Each type gets its own module with `type t` as the primary type.
+- Every record derives `sexp_of, compare, equal` (and `fields` where
+  useful) via `ppx_jane`.
+- Recoverable failures return `_ Or_error.t`. Exception-throwing
+  companions have the `_exn` suffix.
+- `open Base` (or `Core` in tests) rather than stdlib functions.
+- Format with `ocamlformat` (config in `.ocamlformat`).
 
 ## Adding a new HiGHS entry point
 
-For any new binding:
-
-1. **`src/highs_stubs.c`**: add a `CAMLprim value caml_highs_...`
-   function that calls the HiGHS C API. Use `check_status` on any
-   `HighsInt` return code, or `check_status_with_key` if the operation
-   has an offending key or path worth surfacing in the error message.
+1. **`src/highs_stubs.c`**: add a `CAMLprim value caml_highs_...` that
+   calls the HiGHS C API. Use `check_status_with_key` for calls that
+   have a natural key or path to include in the error message.
 2. **`src/highs.ml`**: declare an `external` inside the private `Ffi`
-   module. Extend the public `solve` (or add a new pure function) so
-   the FFI stays hidden.
-3. **`src/highs.mli`**: document the new public function or record
-   field.
+   module; extend `solve`/`write` or add a new pure function.
+3. **`src/highs.mli`**: document the new public function.
 
 If the HiGHS call takes an OCaml `int array` and needs `HighsInt*`, use
-`alloc_hi_from_ocaml_intarr`. Remember to `caml_stat_free` the buffer.
+`alloc_hi_buf`. Remember to `caml_stat_free` the buffer.
+
+## Adding a new record type
+
+1. Declare the record inside its own module.
+2. Add `[@@deriving sexp_of, compare, equal, fields]`.
+3. Provide a `create` function with labeled args and reasonable defaults.
+4. If the type has bounded semantics (e.g. binary vars with implicit
+   `[0, 1]` bounds), add a helper constructor that hides the invariant.
 
 ## Testing
 
-Every new feature gets at least one alcotest case in
-`test/test_highs.ml`. Group by area:
-
-- `constructors` for pure OCaml constructors
-- `lp` / `mip` for solve behavior
-- `status` for status outcomes
-- `options` for option handling
-- `file_io` for read/write
-
-## HiGHS version compatibility
-
-HiGHS grows its C API but does not remove entry points. New releases
-mean new bindings we can add; existing bindings continue to work. When
-a HiGHS release adds a useful entry point, add the binding and note
-the minimum required version in the CHANGELOG.
+Every new feature gets a `let%expect_test` block in
+`test/test_highs.ml`. Print via `print_s [%sexp (x : ...)]` for
+structural comparison against `[%expect]`. When output changes, `dune
+promote` accepts the new baseline.
 
 ## Commit style
 
 [Conventional Commits](https://www.conventionalcommits.org/):
 ```
 feat: bind Highs_passHessian for QP
-fix(stubs): include option key in Solver_error message
-docs: clarify functional-core / imperative-shell boundary
+fix(stubs): include option key in Solver_error
+docs: clarify Or_error vs _exn conventions
 test: cover Warning status separately from Ok
 ```

@@ -1,215 +1,235 @@
-(** OCaml bindings for the HiGHS optimization solver.
+(** OCaml bindings for the {{:https://highs.dev} HiGHS} optimization solver.
 
-    A functional interface: an optimization problem is a value of type
-    {!type-model} built from immutable records, and {!solve} is the only
-    operation that talks to HiGHS. Every other function in this module
-    is a pure OCaml constructor.
+    A functional interface written in Jane Street style: each type has its
+    own module, records derive [sexp_of], [compare], [equal], and [hash],
+    and the recoverable-failure entry points return [_ Or_error.t] with
+    exception-throwing [_exn] companions.
 
-    {1 Quick example: a diet problem}
+    {1 Example}
 
     {[
+      open Base
+      open Highs
+
       let m =
-        Highs.model
-          ~sense:Highs.Minimize
+        Model.create
+          ~sense:Minimize
           ~vars:[|
-            Highs.continuous ~name:"bread" ~cost:0.5 ~lower:0.0 ();
-            Highs.continuous ~name:"milk"  ~cost:0.3 ~lower:0.0 ();
-            Highs.continuous ~name:"meat"  ~cost:0.7 ~lower:0.0 ();
+            Var.continuous ~name:"bread" ~cost:0.5 ();
+            Var.continuous ~name:"milk"  ~cost:0.3 ();
+            Var.continuous ~name:"meat"  ~cost:0.7 ();
           |]
           ~constraints:[|
-            Highs.geq ~name:"protein"
-              ~terms:[(4.0, 0); (8.0, 1); (20.0, 2)] ~rhs:50.0 ();
-            Highs.geq ~name:"calcium"
-              ~terms:[(2.0, 0); (12.0, 1); (3.0, 2)] ~rhs:30.0 ();
+            Constraint.geq ~name:"protein"
+              ~terms:[(4., 0); (8., 1); (20., 2)] ~rhs:50. ();
+            Constraint.geq ~name:"calcium"
+              ~terms:[(2., 0); (12., 1); (3., 2)] ~rhs:30. ();
           |]
           ()
       in
-      let sol = Highs.solve m in
-      match sol.status with
-      | Highs.Optimal ->
-        Printf.printf "cost = %.4f\n" sol.objective;
-        Array.iter (Printf.printf "  %f\n") sol.values
-      | s -> Printf.printf "no optimum: %s\n" (Highs.status_to_string s)
+      match solve m with
+      | Ok sol -> print_s [%sexp (sol.status : Status.t)]
+      | Error e -> print_s [%sexp (e : Error.t)]
     ]} *)
 
-(** {1 Objective sense} *)
+open Base
 
-type sense = Minimize | Maximize
+(** {1 Enums} *)
 
-(** {1 Variables} *)
+module Sense : sig
+  type t = Minimize | Maximize
+  [@@deriving sexp_of, compare, equal, hash]
+end
 
-(** What values a variable can take. *)
-type var_kind =
-  | Continuous     (** any real in [lower, upper] *)
-  | Integer        (** any integer in [lower, upper] *)
-  | Binary         (** 0 or 1 (lower and upper ignored) *)
-  | Semi_continuous (** 0, or any real in [lower, upper] *)
-  | Semi_integer    (** 0, or any integer in [lower, upper] *)
+module Var_kind : sig
+  type t =
+    | Continuous
+    | Integer
+    | Binary
+    | Semi_continuous
+    | Semi_integer
+  [@@deriving sexp_of, compare, equal, hash]
+end
 
-type var = {
-  name : string;   (** empty string if unnamed *)
-  kind : var_kind;
-  lower : float;   (** use [neg_infinity] for no lower bound *)
-  upper : float;   (** use [infinity] for no upper bound *)
-  cost : float;    (** coefficient in the objective *)
-}
+module Solver_algorithm : sig
+  type t = Simplex | Ipm | Pdlp | Auto
+  [@@deriving sexp_of, compare, equal]
+end
 
-(** {2 Variable constructors} *)
+module Toggle : sig
+  type t = On | Off | Auto
+  [@@deriving sexp_of, compare, equal]
+end
 
-val var :
-  ?name:string ->
-  ?kind:var_kind ->
-  ?lower:float ->
-  ?upper:float ->
-  ?cost:float ->
-  unit -> var
-(** General constructor. Defaults: [name = ""], [kind = Continuous],
-    [lower = 0.0], [upper = infinity], [cost = 0.0]. *)
+module Option_value : sig
+  type t =
+    | Bool of bool
+    | Int of int
+    | Float of float
+    | String of string
+  [@@deriving sexp_of]
+end
 
-val continuous :
-  ?name:string -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> var
+module Status : sig
+  type t =
+    | Optimal
+    | Infeasible
+    | Unbounded
+    | Unbounded_or_infeasible
+    | Time_limit
+    | Iteration_limit
+    | Model_error
+    | Interrupted
+    | Not_solved
+    | Other of string
+  [@@deriving sexp_of, compare, equal]
 
-val integer :
-  ?name:string -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> var
+  val to_string : t -> string
+end
 
-val binary : ?name:string -> ?cost:float -> unit -> var
+(** {1 Model components} *)
 
-(** {1 Constraints}
+module Var : sig
+  type t = {
+    name  : string;
+    kind  : Var_kind.t;
+    lower : float;
+    upper : float;
+    cost  : float;
+  } [@@deriving sexp_of, compare, equal, fields]
 
-    A term is a pair [(coefficient, variable_index)]. Read [(4.0, 0)] as
-    "4.0 times variable 0". *)
+  (** [create ()] builds a decision variable. Defaults: [name = ""],
+      [kind = Continuous], [lower = 0.], [upper = infinity], [cost = 0.]. *)
+  val create :
+    ?name:string ->
+    ?kind:Var_kind.t ->
+    ?lower:float ->
+    ?upper:float ->
+    ?cost:float ->
+    unit -> t
 
-type term = float * int
+  val continuous :
+    ?name:string -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> t
 
-type constr = {
-  name : string;
-  lower : float;
-  upper : float;
-  terms : term list;
-}
+  val integer :
+    ?name:string -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> t
 
-(** {2 Constraint constructors} *)
+  (** [binary ()] fixes [lower = 0.], [upper = 1.], [kind = Binary]. *)
+  val binary : ?name:string -> ?cost:float -> unit -> t
+end
 
-val eq  : ?name:string -> terms:term list -> rhs:float -> unit -> constr
-(** [eq ~terms ~rhs ()] encodes [sum(terms) = rhs]. *)
+module Term : sig
+  (** A single term in a linear expression: [(coefficient, variable_index)].
+      Read [(4., 0)] as "4 times variable 0". *)
+  type t = float * int
+  [@@deriving sexp_of, compare, equal]
+end
 
-val leq : ?name:string -> terms:term list -> rhs:float -> unit -> constr
-(** [leq ~terms ~rhs ()] encodes [sum(terms) <= rhs]. *)
+module Constraint : sig
+  type t = {
+    name  : string;
+    lower : float;
+    upper : float;
+    terms : Term.t list;
+  } [@@deriving sexp_of, compare, equal, fields]
 
-val geq : ?name:string -> terms:term list -> rhs:float -> unit -> constr
-(** [geq ~terms ~rhs ()] encodes [sum(terms) >= rhs]. *)
+  (** [range ~terms ~lower ~upper ()] encodes
+      [lower <= sum(terms) <= upper]. *)
+  val range :
+    ?name:string ->
+    terms:Term.t list ->
+    lower:float ->
+    upper:float ->
+    unit -> t
 
-val range :
-  ?name:string -> terms:term list -> lower:float -> upper:float -> unit -> constr
-(** [range ~terms ~lower ~upper ()] encodes [lower <= sum(terms) <= upper]. *)
+  val eq  : ?name:string -> terms:Term.t list -> rhs:float -> unit -> t
+  val leq : ?name:string -> terms:Term.t list -> rhs:float -> unit -> t
+  val geq : ?name:string -> terms:Term.t list -> rhs:float -> unit -> t
+end
 
-(** {1 Models} *)
+module Model : sig
+  type t = {
+    name        : string;
+    sense       : Sense.t;
+    offset      : float;
+    vars        : Var.t array;
+    constraints : Constraint.t array;
+  } [@@deriving sexp_of, compare, equal, fields]
 
-type model = {
-  name : string;
-  sense : sense;
-  offset : float;                (** constant added to the objective *)
-  vars : var array;
-  constraints : constr array;
-}
+  val create :
+    ?name:string ->
+    ?sense:Sense.t ->
+    ?offset:float ->
+    vars:Var.t array ->
+    constraints:Constraint.t array ->
+    unit -> t
 
-val model :
-  ?name:string ->
-  ?sense:sense ->
-  ?offset:float ->
-  vars:var array ->
-  constraints:constr array ->
-  unit ->
-  model
-(** Assemble a model. Defaults: [name = ""], [sense = Minimize],
-    [offset = 0.0]. *)
+  val has_integer_vars : t -> bool
+end
 
 (** {1 Solver options} *)
 
-(** LP algorithm to use. *)
-type solver = Simplex | Ipm | Pdlp | Auto
+module Options : sig
+  type t = {
+    time_limit : float option;      (** seconds *)
+    mip_gap    : float option;      (** relative MIP gap tolerance *)
+    threads    : int option;
+    output     : bool;              (** HiGHS's own log to stdout *)
+    solver     : Solver_algorithm.t;
+    presolve   : Toggle.t;
+    parallel   : Toggle.t;
+    extra      : (string * Option_value.t) list;
+      (** Any HiGHS option not covered above, keyed by name. Unknown keys
+          make [solve] return [Error]. *)
+  } [@@deriving sexp_of, fields]
 
-(** For yes/no/let-HiGHS-decide options. *)
-type toggle = On | Off | Auto
+  val default : t
+end
 
-(** For the [extra] option escape hatch. *)
-type option_value =
-  | Bool of bool
-  | Int of int
-  | Float of float
-  | String of string
+(** {1 Solutions} *)
 
-type options = {
-  time_limit : float option;   (** seconds *)
-  mip_gap    : float option;   (** relative MIP gap tolerance *)
-  threads    : int option;
-  output     : bool;           (** HiGHS's own log to stdout *)
-  solver     : solver;
-  presolve   : toggle;
-  parallel   : toggle;
-  extra      : (string * option_value) list;
-    (** Any HiGHS option not covered above, keyed by name. *)
-}
-
-val default_options : options
-(** Sensible defaults: no time limit, [mip_gap] left to HiGHS's default,
-    all threads, [output = false], everything else on [Auto], no extras. *)
-
-(** {1 Status of a completed solve} *)
-
-type status =
-  | Optimal
-  | Infeasible
-  | Unbounded
-  | Unbounded_or_infeasible
-  | Time_limit
-  | Iteration_limit
-  | Model_error
-  | Interrupted
-  | Not_solved
-  | Other of string
-    (** A HiGHS model-status we don't map explicitly (rare). *)
-
-val status_to_string : status -> string
-val pp_status : Format.formatter -> status -> unit
-
-(** {1 Solution} *)
-
-type solution = {
-  status : status;
-  objective : float;
-  values : float array;         (** one entry per variable *)
-  duals : float array;          (** dual (reduced cost) per variable *)
-  row_values : float array;     (** one entry per constraint *)
-  row_duals : float array;      (** one entry per constraint *)
-  simplex_iterations : int64;
-  mip_nodes : int64;
-}
+module Solution : sig
+  type t = {
+    status             : Status.t;
+    objective          : float;
+    values             : float array;    (** one entry per variable *)
+    duals              : float array;    (** dual (reduced cost) per variable *)
+    row_values         : float array;    (** one entry per constraint *)
+    row_duals          : float array;    (** one entry per constraint *)
+    simplex_iterations : Int64.t;
+    mip_nodes          : Int64.t;
+  } [@@deriving sexp_of, fields]
+end
 
 (** {1 Errors} *)
 
+(** Raised by [_exn] variants when HiGHS reports an internal error.
+    The [Or_error]-returning variants convert this exception into an
+    [Error] value. *)
 exception Solver_error of string
-(** Raised when HiGHS reports an internal error during {!solve},
-    {!write}, or option application. The string contains the operation
-    name and the offending key or path when applicable. *)
 
-(** {1 The core operation} *)
+(** {1 The core operations} *)
 
-val solve : ?options:options -> model -> solution
-(** Solve a model. This is the only function that has side effects
-    (allocating a HiGHS handle, running the solver). It returns a fresh
-    {!type-solution} record; the handle is released before returning.
+(** Solve a model. Returns the fresh {!Solution.t} on success. The
+    HiGHS handle is created, used, and released inside this call.
 
-    @raise Solver_error on any HiGHS error during option setup, model
-    loading, or solve. Infeasible and unbounded outcomes are NOT errors;
-    they are reported through {!type-status}. *)
+    [Solver_error] is caught and returned as [Error]. Infeasible and
+    unbounded outcomes are NOT errors: they are reported through
+    {!Solution.status}. *)
+val solve : ?options:Options.t -> Model.t -> Solution.t Or_error.t
 
-(** {1 File I/O} *)
+(** Exception-raising variant of {!solve}.
+    @raise Solver_error on any HiGHS internal error. *)
+val solve_exn : ?options:Options.t -> Model.t -> Solution.t
 
-val write : model -> string -> unit
 (** Write the model to an MPS or LP file (format chosen by extension).
+    Options are applied before writing so [output = false] silences the
+    HiGHS banner. *)
+val write : ?options:Options.t -> Model.t -> string -> unit Or_error.t
 
+(** Exception-raising variant of {!write}.
     @raise Solver_error if the file cannot be written. *)
+val write_exn : ?options:Options.t -> Model.t -> string -> unit
 
 (** {1 Version} *)
 

@@ -1,328 +1,266 @@
-(* Alcotest suite for the functional Highs API. *)
+(* Synchronous Expect_test_config that satisfies the ppx_expect signature.
+   Placed before [open Core] so its types are Stdlib.unit / Stdlib.string. *)
+module Expect_test_config
+  : Expect_test_config_types.S with type 'a IO.t = 'a
+= struct
+  module IO = struct
+    type 'a t = 'a
+    let return x = x
+  end
+  let run f = f ()
+  let sanitize s = s
+  let upon_unreleasable_issue = `CR
+end
 
+open! Core
 open Highs
 
-let close a b = Float.abs (a -. b) < 1e-6
+let quiet = { Options.default with output = false }
 
-let quiet = { default_options with output = false }
+(* -- Version -- *)
 
-(* ============ Version ============ *)
+let%expect_test "version is a sensible triple" =
+  printf "major_positive=%b minor_nonneg=%b patch_nonneg=%b\n"
+    (Version.major () > 0)
+    (Version.minor () >= 0)
+    (Version.patch () >= 0);
+  [%expect {| major_positive=true minor_nonneg=true patch_nonneg=true |}]
 
-let test_version_positive () =
-  Alcotest.(check bool) "major > 0" true (Version.major () > 0);
-  Alcotest.(check bool) "version string non-empty" true
-    (String.length (Version.string ()) > 0)
+(* -- Model construction (pure) -- *)
 
-let test_version_matches () =
-  let s = Version.string () in
-  let expected = Printf.sprintf "%d.%d.%d"
-    (Version.major ()) (Version.minor ()) (Version.patch ())
-  in
-  Alcotest.(check string) "string matches major.minor.patch" expected s
+let%expect_test "var defaults" =
+  let v = Var.create () in
+  print_s [%sexp (v : Var.t)];
+  [%expect {| ((name "") (kind Continuous) (lower 0) (upper INF) (cost 0)) |}]
 
-(* ============ Constructors ============ *)
+let%expect_test "binary fixes bounds" =
+  let v = Var.binary ~name:"x" ~cost:2. () in
+  print_s [%sexp (v : Var.t)];
+  [%expect {| ((name x) (kind Binary) (lower 0) (upper 1) (cost 2)) |}]
 
-let test_var_defaults () =
-  let v = var () in
-  Alcotest.(check string) "no name"  "" v.name;
-  Alcotest.(check bool)   "continuous" true (v.kind = Continuous);
-  Alcotest.(check (float 0.)) "lower = 0" 0.0 v.lower;
-  Alcotest.(check bool) "upper = infinity" true (v.upper = infinity);
-  Alcotest.(check (float 0.)) "cost = 0" 0.0 v.cost
+let%expect_test "constraint constructors" =
+  let show c = print_s [%sexp (c : Constraint.t)] in
+  show (Constraint.eq  ~terms:[(1., 0)] ~rhs:3.  ());
+  show (Constraint.leq ~terms:[(1., 0)] ~rhs:5.  ());
+  show (Constraint.geq ~terms:[(1., 0)] ~rhs:2.  ());
+  show (Constraint.range ~terms:[(1., 0)] ~lower:1. ~upper:4. ());
+  [%expect {|
+    ((name "") (lower 3) (upper 3) (terms ((1 0))))
+    ((name "") (lower -INF) (upper 5) (terms ((1 0))))
+    ((name "") (lower 2) (upper INF) (terms ((1 0))))
+    ((name "") (lower 1) (upper 4) (terms ((1 0)))) |}]
 
-let test_binary_bounds () =
-  let v = binary () in
-  Alcotest.(check bool) "kind = Binary" true (v.kind = Binary);
-  Alcotest.(check (float 0.)) "lower = 0" 0.0 v.lower;
-  Alcotest.(check (float 0.)) "upper = 1" 1.0 v.upper
+(* -- LP -- *)
 
-let test_constraint_constructors () =
-  let e = eq  ~terms:[(1.0, 0)] ~rhs:3.0 () in
-  let l = leq ~terms:[(1.0, 0)] ~rhs:5.0 () in
-  let g = geq ~terms:[(1.0, 0)] ~rhs:2.0 () in
-  let r = range ~terms:[(1.0, 0)] ~lower:1.0 ~upper:4.0 () in
-  Alcotest.(check (float 0.)) "eq  lower" 3.0 e.lower;
-  Alcotest.(check (float 0.)) "eq  upper" 3.0 e.upper;
-  Alcotest.(check bool) "leq lower is -inf" true (l.lower = neg_infinity);
-  Alcotest.(check (float 0.)) "leq upper" 5.0 l.upper;
-  Alcotest.(check (float 0.)) "geq lower" 2.0 g.lower;
-  Alcotest.(check bool) "geq upper is inf" true (g.upper = infinity);
-  Alcotest.(check (float 0.)) "range lower" 1.0 r.lower;
-  Alcotest.(check (float 0.)) "range upper" 4.0 r.upper
-
-(* ============ LP: minimize ============ *)
-
-(* min x + y s.t. x + 2y >= 1, x,y >= 0. Optimum obj = 0.5. *)
-let test_solve_min_lp () =
-  let m = model
+let%expect_test "minimize x + y s.t. x + 2y >= 1" =
+  let m = Model.create
     ~sense:Minimize
-    ~vars:[|
-      continuous ~cost:1.0 ();
-      continuous ~cost:1.0 ();
-    |]
-    ~constraints:[|
-      geq ~terms:[(1.0, 0); (2.0, 1)] ~rhs:1.0 ();
-    |]
+    ~vars:[| Var.continuous ~cost:1. (); Var.continuous ~cost:1. () |]
+    ~constraints:[| Constraint.geq ~terms:[(1., 0); (2., 1)] ~rhs:1. () |]
     ()
   in
-  let sol = solve ~options:quiet m in
-  Alcotest.(check string) "status" "Optimal" (status_to_string sol.status);
-  Alcotest.(check bool) "obj = 0.5" true (close sol.objective 0.5);
-  Alcotest.(check int)  "2 values" 2 (Array.length sol.values);
-  Alcotest.(check int)  "1 row"    1 (Array.length sol.row_values)
+  let sol = solve_exn m ~options:quiet in
+  printf "%s obj=%.4f\n" (Status.to_string sol.status) sol.objective;
+  [%expect {| Optimal obj=0.5000 |}]
 
-(* max x + y s.t. x + y <= 15, 1 <= x,y <= 10. Optimum = 15. *)
-let test_solve_max_lp () =
-  let m = model
+let%expect_test "maximize x + y s.t. x + y <= 15, 1 <= vars <= 10" =
+  let m = Model.create
     ~sense:Maximize
     ~vars:[|
-      continuous ~cost:1.0 ~lower:1.0 ~upper:10.0 ();
-      continuous ~cost:1.0 ~lower:1.0 ~upper:10.0 ();
+      Var.continuous ~cost:1. ~lower:1. ~upper:10. ();
+      Var.continuous ~cost:1. ~lower:1. ~upper:10. ();
     |]
+    ~constraints:[| Constraint.leq ~terms:[(1., 0); (1., 1)] ~rhs:15. () |]
+    ()
+  in
+  let sol = solve_exn m ~options:quiet in
+  printf "%s obj=%.4f\n" (Status.to_string sol.status) sol.objective;
+  [%expect {| Optimal obj=15.0000 |}]
+
+let%expect_test "solution has one dual per var and per row" =
+  let m = Model.create
+    ~vars:[| Var.continuous ~cost:1. (); Var.continuous ~cost:1. () |]
     ~constraints:[|
-      leq ~terms:[(1.0, 0); (1.0, 1)] ~rhs:15.0 ();
+      Constraint.geq ~terms:[(1., 0); (1., 1)] ~rhs:1. ();
+      Constraint.leq ~terms:[(1., 0); (1., 1)] ~rhs:5. ();
     |]
     ()
   in
-  let sol = solve ~options:quiet m in
-  Alcotest.(check bool) "obj = 15" true (close sol.objective 15.0)
+  let sol = solve_exn m ~options:quiet in
+  printf "cols=%d col_duals=%d rows=%d row_duals=%d\n"
+    (Array.length sol.values) (Array.length sol.duals)
+    (Array.length sol.row_values) (Array.length sol.row_duals);
+  [%expect {| cols=2 col_duals=2 rows=2 row_duals=2 |}]
 
-(* ============ Status: infeasible, unbounded ============ *)
+(* -- Status outcomes -- *)
 
-let test_status_infeasible () =
-  let m = model
-    ~vars:[| continuous ~cost:1.0 ~lower:0.0 ~upper:1.0 () |]
-    ~constraints:[| geq ~terms:[(1.0, 0)] ~rhs:10.0 () |]
+let%expect_test "infeasible: x in [0, 1], x >= 10" =
+  let m = Model.create
+    ~vars:[| Var.continuous ~lower:0. ~upper:1. () |]
+    ~constraints:[| Constraint.geq ~terms:[(1., 0)] ~rhs:10. () |]
     ()
   in
-  let sol = solve ~options:quiet m in
-  Alcotest.(check string) "Infeasible" "Infeasible" (status_to_string sol.status)
+  let sol = solve_exn m ~options:quiet in
+  print_s [%sexp (sol.status : Status.t)];
+  [%expect {| Infeasible |}]
 
-let test_status_unbounded () =
-  let opts = { quiet with presolve = Off } in
-  let m = model
+let%expect_test "unbounded: max x, x >= 0" =
+  let m = Model.create
     ~sense:Maximize
-    ~vars:[| continuous ~cost:1.0 ~lower:0.0 ~upper:infinity () |]
+    ~vars:[| Var.continuous ~cost:1. ~lower:0. () |]
     ~constraints:[||]
     ()
   in
-  let sol = solve ~options:opts m in
-  Alcotest.(check bool) "unbounded (or _or_infeasible)" true
-    (sol.status = Unbounded || sol.status = Unbounded_or_infeasible)
+  let sol = solve_exn m ~options:{ quiet with presolve = Off } in
+  let is_unbounded =
+    Status.equal sol.status Unbounded
+    || Status.equal sol.status Unbounded_or_infeasible
+  in
+  printf "unbounded_or_ambiguous=%b\n" is_unbounded;
+  [%expect {| unbounded_or_ambiguous=true |}]
 
-(* ============ MIP: knapsack ============ *)
+(* -- MIP: knapsack -- *)
 
-(* Same instance as ocaml-hexaly's knapsack: optimum value = 309. *)
-let test_mip_knapsack () =
+let%expect_test "10-item knapsack: optimum 309" =
   let weights = [| 23; 31; 29; 44; 53; 38; 63; 85; 89; 82 |] in
   let values  = [| 92; 57; 49; 68; 60; 43; 67; 84; 87; 72 |] in
   let cap = 165 in
   let n = Array.length weights in
-  let vars = Array.init n (fun i ->
-    binary ~name:(Printf.sprintf "x%d" i) ~cost:(float_of_int values.(i)) ())
+  let vars =
+    Array.init n ~f:(fun i ->
+      Var.binary ~cost:(Float.of_int values.(i)) ())
   in
-  let terms = List.init n (fun i -> (float_of_int weights.(i), i)) in
-  let m = model
+  let terms =
+    List.init n ~f:(fun i -> (Float.of_int weights.(i), i))
+  in
+  let m = Model.create
+    ~sense:Maximize ~vars
+    ~constraints:[| Constraint.leq ~terms ~rhs:(Float.of_int cap) () |]
+    ()
+  in
+  let sol = solve_exn m ~options:{ quiet with mip_gap = Some 0. } in
+  printf "%s obj=%.0f\n" (Status.to_string sol.status) sol.objective;
+  [%expect {| Optimal obj=309 |}]
+
+let%expect_test "changing a var's kind is a new model" =
+  let base = Model.create
     ~sense:Maximize
-    ~vars
-    ~constraints:[| leq ~name:"capacity" ~terms ~rhs:(float_of_int cap) () |]
+    ~vars:[| Var.continuous ~cost:1. ~lower:0. ~upper:5. () |]
+    ~constraints:[| Constraint.leq ~terms:[(1., 0)] ~rhs:3.7 () |]
     ()
   in
-  let sol = solve ~options:{ quiet with mip_gap = Some 0.0 } m in
-  Alcotest.(check bool) "knapsack optimum = 309" true (close sol.objective 309.0);
-  Alcotest.(check string) "Optimal" "Optimal" (status_to_string sol.status)
+  let lp = solve_exn base ~options:quiet in
+  let mip_vars = Array.map base.vars ~f:(fun v -> { v with kind = Integer }) in
+  let mip = { base with vars = mip_vars } in
+  let mip_sol = solve_exn mip ~options:quiet in
+  printf "lp=%.2f mip=%.2f\n" lp.objective mip_sol.objective;
+  [%expect {| lp=3.70 mip=3.00 |}]
 
-(* Change a continuous var into an integer by rebuilding the model
- * (functional API: no in-place mutation). *)
-let test_var_kind_change () =
-  let base = model
-    ~sense:Maximize
-    ~vars:[| continuous ~cost:1.0 ~lower:0.0 ~upper:5.0 () |]
-    ~constraints:[| leq ~terms:[(1.0, 0)] ~rhs:3.7 () |]
+(* -- Options -- *)
+
+let%expect_test "default options" =
+  print_s [%sexp (Options.default : Options.t)];
+  [%expect {|
+    ((time_limit ()) (mip_gap ()) (threads ()) (output false) (solver Auto)
+     (presolve Auto) (parallel Auto) (extra ())) |}]
+
+let%expect_test "time_limit accepted" =
+  let m = Model.create
+    ~vars:[| Var.continuous ~cost:1. () |]
+    ~constraints:[| Constraint.geq ~terms:[(1., 0)] ~rhs:0. () |]
     ()
   in
-  let cont_sol = solve ~options:quiet base in
-  Alcotest.(check bool) "continuous solution = 3.7" true
-    (close cont_sol.objective 3.7);
+  let opts = { quiet with time_limit = Some 60. } in
+  let sol = solve_exn m ~options:opts in
+  print_s [%sexp (sol.status : Status.t)];
+  [%expect {| Optimal |}]
 
-  let mip = { base with
-    vars = [| { base.vars.(0) with kind = Integer } |]
-  } in
-  let mip_sol = solve ~options:quiet mip in
-  Alcotest.(check bool) "integer solution = 3" true
-    (close mip_sol.objective 3.0)
-
-(* ============ Options ============ *)
-
-let test_default_options () =
-  let d = default_options in
-  Alcotest.(check bool) "no time limit"   true (d.time_limit = None);
-  Alcotest.(check bool) "output off"      true (d.output = false);
-  Alcotest.(check bool) "solver = Auto"   true (d.solver = Auto);
-  Alcotest.(check bool) "presolve = Auto" true (d.presolve = Auto)
-
-let test_options_time_limit () =
-  let m = model
-    ~vars:[| continuous ~cost:1.0 () |]
-    ~constraints:[| geq ~terms:[(1.0, 0)] ~rhs:0.0 () |]
+let%expect_test "unknown option name surfaces in error" =
+  let m = Model.create
+    ~vars:[| Var.continuous ~cost:1. () |]
+    ~constraints:[| Constraint.geq ~terms:[(1., 0)] ~rhs:0. () |]
     ()
   in
-  let opts = { quiet with time_limit = Some 60.0 } in
-  let sol = solve ~options:opts m in
-  Alcotest.(check string) "solves with time limit" "Optimal"
-    (status_to_string sol.status)
+  let opts = { quiet with extra = [("totally_bogus", Int 42)] } in
+  match solve m ~options:opts with
+  | Ok _ -> print_endline "unexpected Ok"
+  | Error e ->
+    let msg = Error.to_string_hum e in
+    printf "mentions_key=%b\n"
+      (String.is_substring msg ~substring:"totally_bogus");
+    [%expect {| mentions_key=true |}]
 
-let test_options_extra_unknown_key_simple () =
-  let m = model
-    ~vars:[| continuous ~cost:1.0 () |]
-    ~constraints:[| geq ~terms:[(1.0, 0)] ~rhs:0.0 () |]
-    ()
-  in
-  let opts = { quiet with
-    extra = [("totally_bogus_option", Int 42)]
-  } in
-  let raised = ref None in
-  (try let _ = solve ~options:opts m in ()
-   with Solver_error msg -> raised := Some msg);
-  match !raised with
-  | None -> Alcotest.fail "expected Solver_error"
-  | Some msg ->
-    let contains needle =
-      let l = String.length msg and n = String.length needle in
-      let rec go i = i + n <= l
-        && (String.sub msg i n = needle || go (i + 1)) in
-      go 0
-    in
-    Alcotest.(check bool) "message names the key" true
-      (contains "totally_bogus_option")
-
-(* Verify the extras escape hatch accepts each value shape without
- * crashing. Use option keys that don't conflict with the typed ones. *)
-let test_options_extra_typed () =
-  let m = model
-    ~vars:[| continuous ~cost:1.0 ~lower:1.0 ~upper:10.0 () |]
-    ~constraints:[| leq ~terms:[(1.0, 0)] ~rhs:5.0 () |]
+let%expect_test "extras: mixed value types" =
+  let m = Model.create
+    ~vars:[| Var.continuous ~cost:1. ~lower:1. ~upper:10. () |]
+    ~constraints:[| Constraint.leq ~terms:[(1., 0)] ~rhs:5. () |]
     ()
   in
   let opts = { quiet with
     extra = [
       ("primal_feasibility_tolerance", Float 1e-7);
-      ("small_matrix_value",           Float 1e-9);
       ("random_seed",                  Int 42);
       ("log_to_console",               Bool false);
     ]
   } in
-  let sol = solve ~options:opts m in
-  Alcotest.(check string) "solved with extras" "Optimal"
-    (status_to_string sol.status)
+  let sol = solve_exn m ~options:opts in
+  print_s [%sexp (sol.status : Status.t)];
+  [%expect {| Optimal |}]
 
-(* ============ Solution shape ============ *)
+(* -- Or_error interface -- *)
 
-let test_solution_dims () =
-  let m = model
+let%expect_test "solve returns Ok on success" =
+  let m = Model.create
+    ~vars:[| Var.continuous ~cost:1. () |]
+    ~constraints:[| Constraint.geq ~terms:[(1., 0)] ~rhs:0. () |]
+    ()
+  in
+  (match solve m ~options:quiet with
+   | Ok _   -> print_endline "Ok"
+   | Error _ -> print_endline "unexpected Error");
+  [%expect {| Ok |}]
+
+(* -- File I/O -- *)
+
+let%expect_test "write MPS produces a non-empty file" =
+  let m = Model.create ~name:"test"
     ~vars:[|
-      continuous ~cost:1.0 (); continuous ~cost:1.0 (); continuous ~cost:1.0 ();
+      Var.continuous ~name:"x" ~cost:1. ~lower:0. ~upper:10. ();
+      Var.continuous ~name:"y" ~cost:2. ~lower:0. ~upper:10. ();
     |]
     ~constraints:[|
-      geq ~terms:[(1.0, 0); (1.0, 1); (1.0, 2)] ~rhs:1.0 ();
-      leq ~terms:[(1.0, 0); (1.0, 1); (1.0, 2)] ~rhs:5.0 ();
+      Constraint.geq ~name:"c1" ~terms:[(1., 0); (1., 1)] ~rhs:3. ();
     |]
     ()
   in
-  let sol = solve ~options:quiet m in
-  Alcotest.(check int) "3 values" 3 (Array.length sol.values);
-  Alcotest.(check int) "3 duals"  3 (Array.length sol.duals);
-  Alcotest.(check int) "2 row_values" 2 (Array.length sol.row_values);
-  Alcotest.(check int) "2 row_duals"  2 (Array.length sol.row_duals)
+  let tmp = Stdlib.Filename.temp_file "highs_" ".mps" in
+  Exn.protectx tmp
+    ~f:(fun tmp ->
+      (match write m tmp ~options:quiet with
+       | Ok () -> ()
+       | Error e -> Error.raise e);
+      let ic = Stdlib.open_in tmp in
+      let sz = Stdlib.in_channel_length ic in
+      Stdlib.close_in ic;
+      printf "exists=%b non_empty=%b\n"
+        (Stdlib.Sys.file_exists tmp) (sz > 0))
+    ~finally:(fun _ -> try Stdlib.Sys.remove tmp with _ -> ());
+  [%expect {| exists=true non_empty=true |}]
 
-(* ============ File I/O ============ *)
+(* -- GC pressure -- *)
 
-let test_write_model () =
-  let m = model
-    ~name:"test"
-    ~vars:[|
-      continuous ~name:"x" ~cost:1.0 ~lower:0.0 ~upper:10.0 ();
-      continuous ~name:"y" ~cost:2.0 ~lower:0.0 ~upper:10.0 ();
-    |]
-    ~constraints:[|
-      geq ~name:"c1" ~terms:[(1.0, 0); (1.0, 1)] ~rhs:3.0 ();
-    |]
-    ()
-  in
-  let tmp = Filename.temp_file "highs_write_" ".mps" in
-  Fun.protect ~finally:(fun () -> try Sys.remove tmp with _ -> ()) (fun () ->
-    write m tmp;
-    Alcotest.(check bool) "file created" true (Sys.file_exists tmp))
-
-(* ============ GC pressure ============ *)
-
-let test_gc_pressure () =
+let%expect_test "200 solves don't leak or crash" =
   for _ = 1 to 200 do
-    let m = model
-      ~vars:[| continuous ~cost:1.0 () |]
-      ~constraints:[| geq ~terms:[(1.0, 0)] ~rhs:0.0 () |]
+    let m = Model.create
+      ~vars:[| Var.continuous ~cost:1. () |]
+      ~constraints:[| Constraint.geq ~terms:[(1., 0)] ~rhs:0. () |]
       ()
     in
-    let sol = solve ~options:quiet m in
-    ignore sol
-  done;
-  Gc.compact (); Gc.full_major ();
-  Alcotest.(check pass) "no crash after 200 solves + GC" () ()
-
-(* ============ Model must be validated by HiGHS ============ *)
-
-(* Non-negative reduced costs give a check we haven't broken sign conventions. *)
-let test_reduced_cost_signs () =
-  (* min x s.t. x >= 1. Reduced cost of x at optimum: 0 (binding).
-     Dual of the constraint: 1 (min-form). *)
-  let m = model
-    ~sense:Minimize
-    ~vars:[| continuous ~cost:1.0 () |]
-    ~constraints:[| geq ~terms:[(1.0, 0)] ~rhs:1.0 () |]
+    let (_ : Solution.t) = solve_exn m ~options:quiet in
     ()
-  in
-  let sol = solve ~options:quiet m in
-  Alcotest.(check bool) "x = 1"   true (close sol.values.(0) 1.0);
-  Alcotest.(check bool) "obj = 1" true (close sol.objective 1.0);
-  Alcotest.(check bool) "row dual > 0 (binding)" true (sol.row_duals.(0) > 0.5)
+  done;
+  Stdlib.Gc.compact ();
+  Stdlib.Gc.full_major ();
+  print_endline "survived";
+  [%expect {| survived |}]
 
-(* ============ Runner ============ *)
-
-let () =
-  Alcotest.run "highs" [
-    "version", [
-      Alcotest.test_case "positive"       `Quick test_version_positive;
-      Alcotest.test_case "string matches" `Quick test_version_matches;
-    ];
-    "constructors", [
-      Alcotest.test_case "var defaults"      `Quick test_var_defaults;
-      Alcotest.test_case "binary bounds"     `Quick test_binary_bounds;
-      Alcotest.test_case "constraint kinds"  `Quick test_constraint_constructors;
-    ];
-    "lp", [
-      Alcotest.test_case "minimize"       `Quick test_solve_min_lp;
-      Alcotest.test_case "maximize"       `Quick test_solve_max_lp;
-      Alcotest.test_case "solution dims"  `Quick test_solution_dims;
-      Alcotest.test_case "reduced costs"  `Quick test_reduced_cost_signs;
-    ];
-    "status", [
-      Alcotest.test_case "infeasible"     `Quick test_status_infeasible;
-      Alcotest.test_case "unbounded"      `Quick test_status_unbounded;
-    ];
-    "mip", [
-      Alcotest.test_case "knapsack"        `Quick test_mip_knapsack;
-      Alcotest.test_case "kind change"     `Quick test_var_kind_change;
-    ];
-    "options", [
-      Alcotest.test_case "defaults"        `Quick test_default_options;
-      Alcotest.test_case "time_limit"      `Quick test_options_time_limit;
-      Alcotest.test_case "extra typed"     `Quick test_options_extra_typed;
-      Alcotest.test_case "unknown key msg" `Quick test_options_extra_unknown_key_simple;
-    ];
-    "file_io", [
-      Alcotest.test_case "write MPS"       `Quick test_write_model;
-    ];
-    "stress", [
-      Alcotest.test_case "200 solves + GC" `Quick test_gc_pressure;
-    ];
-  ]

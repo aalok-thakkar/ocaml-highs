@@ -1,4 +1,4 @@
-(lang dune 3.0)
+(lang dune 3.7)
 (name highs)
 (version 0.1.0)
 
@@ -20,30 +20,27 @@
 solver for linear programming, mixed-integer programming, and quadratic \
 programming from the University of Edinburgh.\n\
 \n\
-The binding is a thin, direct wrapper over the HiGHS C API. There is no \
-intermediate C++ shim, so the stack is one FFI boundary instead of two: \
-OCaml -> C stubs -> libhighs.\n\
+Written in Jane Street style: module per type, records deriving \
+sexp_of / compare / equal / hash / fields via ppx_jane, Or_error results \
+for expected failures, an exception-throwing '_exn' companion for each \
+Or_error function.\n\
 \n\
 Features in 0.1.0:\n\
-- Bulk LP/MIP model passing plus incremental add_col/add_row.\n\
-- Typed enums for objective sense, integrality, and model status.\n\
-- Typed error module mirroring HighsStatus.\n\
-- Typed common options (time limit, presolve, solver, parallel, mip_rel_gap, \
-output flag) plus escape hatches for arbitrary options by name.\n\
-- Solution readback: primal and dual values for columns and rows, objective \
-value, model status.\n\
-- File I/O: read .mps and .lp models, write models and solutions.\n\
-- GC-managed handle lifetime via OCaml custom blocks and finalizers.\n\
-\n\
-Deferred to future releases: quadratic programming, callbacks, cutpools, \
-presolve/postsolve pipelines, basis I/O.\n\
+- Immutable model type built from Var, Constraint, and Model modules.\n\
+- Solve returning Solution.t Or_error.t (and solve_exn variant).\n\
+- Typed options with an extras escape hatch keyed by option name.\n\
+- File I/O to MPS / LP formats.\n\
+- Inline expect tests covering every public entry point.\n\
 \n\
 Requires HiGHS 1.11 or later, discoverable via pkg-config.")
  (depends
   (ocaml (>= 4.14))
-  (dune (>= 3.0))
+  (dune (>= 3.7))
   dune-configurator
-  (alcotest (and (>= 1.5) :with-test))
+  base
+  ppx_jane
+  (core (and (>= v0.17) :with-test))
+  (expect_test_helpers_core (and (>= v0.17) :with-test))
   (odoc :with-doc))
  (tags
   ("optimization"
