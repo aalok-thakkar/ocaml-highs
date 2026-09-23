@@ -1,5 +1,3 @@
-(library
+(test
  (name test_highs)
- (libraries highs core expect_test_helpers_core ppx_expect.config ppx_expect.config_types)
- (inline_tests)
- (preprocess (pps ppx_jane)))
+ (libraries highs alcotest))

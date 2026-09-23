@@ -1,8 +1,13 @@
+; ocaml-highs library.
+;
+; Three-layer binding:
+;   highs.{ml,mli}   public OCaml API
+;   highs_stubs.c    calls the HiGHS C API directly
+;   libhighs         installed system-wide (brew, apt, or built from source)
+
 (library
  (name highs)
  (public_name highs)
- (libraries base)
- (preprocess (pps ppx_jane))
  (foreign_stubs
   (language c)
   (names highs_stubs)

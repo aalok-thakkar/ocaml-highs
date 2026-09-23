@@ -6,14 +6,18 @@ synopsis:
 description: """
 Idiomatic OCaml interface to HiGHS (https://highs.dev), an open-source solver for linear programming, mixed-integer programming, and quadratic programming from the University of Edinburgh.
 
-Written in Jane Street style: module per type, records deriving sexp_of / compare / equal / hash / fields via ppx_jane, Or_error results for expected failures, an exception-throwing '_exn' companion for each Or_error function.
+The binding is a thin, direct wrapper over the HiGHS C API. There is no intermediate C++ shim, so the stack is one FFI boundary instead of two: OCaml -> C stubs -> libhighs.
 
 Features in 0.1.0:
-- Immutable model type built from Var, Constraint, and Model modules.
-- Solve returning Solution.t Or_error.t (and solve_exn variant).
-- Typed options with an extras escape hatch keyed by option name.
-- File I/O to MPS / LP formats.
-- Inline expect tests covering every public entry point.
+- Bulk LP/MIP model passing plus incremental add_col/add_row.
+- Typed enums for objective sense, integrality, and model status.
+- Typed error module mirroring HighsStatus.
+- Typed common options (time limit, presolve, solver, parallel, mip_rel_gap, output flag) plus escape hatches for arbitrary options by name.
+- Solution readback: primal and dual values for columns and rows, objective value, model status.
+- File I/O: read .mps and .lp models, write models and solutions.
+- GC-managed handle lifetime via OCaml custom blocks and finalizers.
+
+Deferred to future releases: quadratic programming, callbacks, cutpools, presolve/postsolve pipelines, basis I/O.
 
 Requires HiGHS 1.11 or later, discoverable via pkg-config."""
 maintainer: ["Aalok Thakkar"]
@@ -33,13 +37,10 @@ homepage: "https://github.com/aalok-thakkar/ocaml-highs"
 doc: "https://aalok-thakkar.github.io/ocaml-highs"
 bug-reports: "https://github.com/aalok-thakkar/ocaml-highs/issues"
 depends: [
-  "ocaml" {>= "5.1"}
-  "dune" {>= "3.7" & >= "3.7"}
+  "ocaml" {>= "4.14"}
+  "dune" {>= "3.0" & >= "3.0"}
   "dune-configurator"
-  "base" {>= "v0.17"}
-  "ppx_jane" {>= "v0.17"}
-  "core" {>= "v0.17" & with-test}
-  "expect_test_helpers_core" {>= "v0.17" & with-test}
+  "alcotest" {>= "1.5" & with-test}
   "odoc" {with-doc}
 ]
 build: [

@@ -7,53 +7,60 @@ OCaml bindings for **[HiGHS](https://highs.dev)**, the open-source
 linear, mixed-integer, and quadratic programming solver from the
 University of Edinburgh.
 
-Written in Jane Street style: module per type, records deriving
-`sexp_of` / `compare` / `equal` / `hash` / `fields` via `ppx_jane`,
-`Or_error.t` results for expected failures with `_exn` companions.
+The interface is functional: you describe an optimization problem as an
+immutable OCaml record, hand it to `Highs.solve`, and get back a fresh
+solution record. No handles, no builders, no in-place mutation on the
+user side.
 
 ```ocaml
-open Core
 open Highs
 
-let m =
-  Model.create
-    ~sense:Minimize
-    ~vars:[|
-      Var.continuous ~name:"bread" ~cost:0.5 ();
-      Var.continuous ~name:"milk"  ~cost:0.3 ();
-      Var.continuous ~name:"meat"  ~cost:0.7 ();
-    |]
-    ~constraints:[|
-      Constraint.geq ~name:"protein"
-        ~terms:[(4., 0); (8., 1); (20., 2)] ~rhs:50. ();
-      Constraint.geq ~name:"calcium"
-        ~terms:[(2., 0); (12., 1); (3., 2)] ~rhs:30. ();
-    |]
-    ()
+let m = model
+  ~sense:Minimize
+  ~vars:[|
+    continuous ~name:"bread" ~cost:0.5 ();
+    continuous ~name:"milk"  ~cost:0.3 ();
+    continuous ~name:"meat"  ~cost:0.7 ();
+  |]
+  ~constraints:[|
+    geq ~name:"protein" ~terms:[(4.0, 0); (8.0, 1); (20.0, 2)] ~rhs:50.0 ();
+    geq ~name:"calcium" ~terms:[(2.0, 0); (12.0, 1); (3.0, 2)] ~rhs:30.0 ();
+  |]
+  ()
 
 let () =
-  match solve m with
-  | Ok sol ->
-    print_s [%sexp (sol.status : Status.t)];
-    printf "cost = %.4f\n" sol.objective
-  | Error e -> print_s [%sexp (e : Error.t)]
+  let sol = solve m in
+  match sol.status with
+  | Optimal ->
+    Printf.printf "cost = %.4f\n" sol.objective;
+    Array.iteri (Printf.printf "  x[%d] = %f\n") sol.values
+  | s -> Printf.printf "no optimum: %s\n" (status_to_string s)
 ```
 
-## Design
+## Design in one paragraph
 
-Everything the user builds is a pure record from a named module:
-`Sense.t`, `Var_kind.t`, `Var.t`, `Term.t`, `Constraint.t`, `Model.t`,
-`Solver_algorithm.t`, `Toggle.t`, `Option_value.t`, `Options.t`,
-`Status.t`, `Solution.t`. Every record type derives `sexp_of`,
-`compare`, `equal` (and `fields` where useful) so you can print,
-diff, hash, and traverse them with ppx-generated helpers.
+Everything the user builds is a pure record: `var`, `term`, `constr`,
+`model`, `options`. `solve : ?options:options -> model -> solution` is
+the only function that touches HiGHS. It creates a handle, applies
+options, encodes the model into HiGHS's arrays, runs the solver,
+extracts the solution, releases the handle, and returns. If you like,
+think of it as an interpreter: `model` is the AST, `solve` is
+`eval`, and `solution` is the result.
 
-`solve : ?options:Options.t -> Model.t -> Solution.t Or_error.t` and
-`write : ?options -> Model.t -> string -> unit Or_error.t` are the only
-functions that talk to HiGHS. Both have `_exn` companions
-(`solve_exn`, `write_exn`) that raise `Solver_error` instead of
-returning `Error`, following Jane Street's `_exn` convention for
-functions that fail rarely.
+## Status
+
+Version 0.1.0. Tested against HiGHS 1.15.1 on macOS Apple Silicon,
+OCaml 5.1.
+
+19 alcotest cases across version, constructors, LP, MIP, status,
+options (including the extras escape hatch), file I/O, and a 200-solve
+GC stress loop. Two worked examples: a diet LP and a 10-item knapsack
+MIP. `opam install .` and `opam install . --with-test` both succeed;
+`opam lint` passes with depexts declared.
+
+Deferred to 0.2+: quadratic programming, callbacks, cutpool exposure,
+basis I/O, `read : string -> model` (model export from a HiGHS handle
+back to an OCaml record).
 
 ## Installation
 
@@ -71,121 +78,120 @@ The binding needs HiGHS on your system. Package managers:
 | NixOS            | `nix-env -iA nixpkgs.highs`         |
 | From source      | [github.com/ERGO-Code/HiGHS](https://github.com/ERGO-Code/HiGHS) |
 
-The build discovers HiGHS through `pkg-config`. If your install is in
-a non-standard location:
+The build discovers HiGHS through pkg-config. If your install is in a
+non-standard location, set:
 
 ```sh
 export HIGHS_CFLAGS="-I/path/to/include"
 export HIGHS_LIBS="-L/path/to/lib -lhighs"
 ```
 
-## Building models
+## Full API tour
 
 ### Variables
 
 ```ocaml
-Var.create ()                                          (* continuous, [0, +inf], cost 0 *)
-Var.continuous ~name:"x" ~lower:0. ~upper:10. ~cost:1. ()
-Var.integer    ~name:"n" ~lower:0. ~upper:100. ()
-Var.binary     ~name:"b" ~cost:5. ()                   (* implicit bounds [0, 1] *)
+val var        : ?name:string -> ?kind:var_kind -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> var
+val continuous : ?name:string -> ?lower:float -> ?upper:float -> ?cost:float -> unit -> var
+val integer    : ?name:string -> ?lower:int   -> ?upper:int   -> ?cost:float -> unit -> var
+val binary     : ?name:string -> ?cost:float  -> unit -> var
 ```
 
-`Var_kind.t` values: `Continuous | Integer | Binary | Semi_continuous
-| Semi_integer`.
+`var_kind` is `Continuous | Integer | Binary | Semi_continuous |
+Semi_integer`. `binary ()` is a shortcut for an integer variable with
+bounds `[0, 1]`.
 
 ### Constraints
 
-Each constraint has a list of `Term.t = float * int` and lower / upper
-bounds:
+Each constraint is a list of `(coefficient, variable_index)` terms
+plus a bound.
 
 ```ocaml
-Constraint.eq    ~terms:[(1., 0); (1., 1)] ~rhs:5. ()
-Constraint.leq   ~terms:[(1., 0); (2., 1)] ~rhs:10. ()
-Constraint.geq   ~terms:[(3., 0)] ~rhs:2. ()
-Constraint.range ~terms:[(1., 0); (1., 1)] ~lower:1. ~upper:4. ()
+val eq    : ?name:string -> terms:term list -> rhs:float -> unit -> constr
+val leq   : ?name:string -> terms:term list -> rhs:float -> unit -> constr
+val geq   : ?name:string -> terms:term list -> rhs:float -> unit -> constr
+val range : ?name:string -> terms:term list -> lower:float -> upper:float -> unit -> constr
 ```
 
-Read `(4., 0)` as "4 times variable 0". The list order is irrelevant.
+`term` is a pair `float * int`: coefficient first, then variable index.
 
-### Models
+### Model
 
 ```ocaml
-Model.create
-  ~name:"my_lp"
-  ~sense:Minimize    (* or Maximize *)
-  ~offset:0.         (* constant added to the objective *)
-  ~vars:[| ... |]
-  ~constraints:[| ... |]
-  ()
+val model :
+  ?name:string ->
+  ?sense:sense ->                    (* Minimize | Maximize, default Minimize *)
+  ?offset:float ->                   (* constant added to the objective *)
+  vars:var array ->
+  constraints:constr array ->
+  unit -> model
 ```
 
 ### Options
 
 ```ocaml
-let opts =
-  { Options.default with
-    time_limit = Some 60.
-  ; mip_gap    = Some 1e-4
-  ; output     = false
-  ; solver     = Simplex
-  ; extra      = [("random_seed", Int 42)]
-  }
-```
-
-`Options.default` gives sensible defaults: no time limit, HiGHS's
-default gap, `output = false`, all other typed knobs on `Auto`.
-Anything HiGHS understands but we don't have a typed field for goes
-in `extra`, with values of `Option_value.t = Bool _ | Int _ | Float
-_ | String _`.
-
-Unknown option names surface in `Solver_error` with the offending key
-included.
-
-### Solving
-
-```ocaml
-match solve m ~options:opts with
-| Ok sol ->
-  (match sol.status with
-   | Optimal -> printf "obj = %f\n" sol.objective
-   | Infeasible -> printf "no feasible point\n"
-   | s -> print_s [%sexp (s : Status.t)])
-| Error e -> print_s [%sexp (e : Error.t)]
-```
-
-Or when you'd rather have exceptions:
-
-```ocaml
-let sol = solve_exn m ~options:opts in
-match sol.status with
-| Optimal -> ...
-```
-
-`Solution.t` is a record with primal + dual values per variable and per
-constraint, plus `simplex_iterations` and `mip_nodes` counters:
-
-```ocaml
-{ status             : Status.t
-; objective          : float
-; values             : float array
-; duals              : float array
-; row_values         : float array
-; row_duals          : float array
-; simplex_iterations : Int64.t
-; mip_nodes          : Int64.t
+type options = {
+  time_limit : float option;         (* seconds *)
+  mip_gap    : float option;         (* relative MIP gap tolerance *)
+  threads    : int option;
+  output     : bool;                 (* HiGHS's own log *)
+  solver     : solver;               (* Simplex | Ipm | Pdlp | Auto *)
+  presolve   : toggle;               (* On | Off | Auto *)
+  parallel   : toggle;
+  extra      : (string * option_value) list;  (* any HiGHS option by name *)
 }
 ```
 
-## Sexp-based diagnostics
+Common usage:
+```ocaml
+let opts = { default_options with
+  time_limit = Some 60.0;
+  mip_gap    = Some 1e-4;
+  output     = true;
+}
+```
 
-Every public record derives `sexp_of`, so a model or solution prints
-cleanly with `print_s [%sexp (m : Model.t)]`:
+Anything HiGHS understands but we don't have a typed field for goes in
+`extra`, with `Bool _ | Int _ | Float _ | String _`:
+```ocaml
+let opts = { default_options with
+  extra = [
+    ("random_seed",                  Int 42);
+    ("primal_feasibility_tolerance", Float 1e-7);
+  ]
+}
+```
+
+Unknown option names raise `Solver_error` with the offending key in
+the message.
+
+### Solve
 
 ```ocaml
-# print_s [%sexp (Options.default : Options.t)];;
-((time_limit ()) (mip_gap ()) (threads ()) (output false) (solver Auto)
- (presolve Auto) (parallel Auto) (extra ()))
+val solve : ?options:options -> model -> solution
+
+type solution = {
+  status : status;
+  objective : float;
+  values : float array;
+  duals : float array;
+  row_values : float array;
+  row_duals : float array;
+  simplex_iterations : int64;
+  mip_nodes : int64;
+}
 ```
+
+`status` covers `Optimal | Infeasible | Unbounded |
+Unbounded_or_infeasible | Time_limit | Iteration_limit | Model_error |
+Interrupted | Not_solved | Other of string`.
+
+### Errors
+
+`exception Solver_error of string`. Raised on internal HiGHS errors
+(bad option key, malformed model, unwritable file). Infeasible and
+unbounded models are NOT errors; they are outcomes reported through
+`status`.
 
 ## Examples
 
@@ -199,12 +205,6 @@ dune exec examples/lp.exe
 dune exec examples/knapsack.exe
 ```
 
-## Testing
-
-Inline expect tests in `test/test_highs.ml`, driven by
-`ppx_expect`. Run with `dune runtest`. When you change output, dune
-prints a diff you can accept with `dune promote`.
-
 ## Comparison to ocaml-hexaly
 
 Same author, different solver.
@@ -217,11 +217,15 @@ Same author, different solver.
 | Binding depth                | 3 layers (no C++ shim)     | 4 layers (C++ shim)       |
 | Model representation         | Immutable record + `solve` | Mutable builder + `solve` |
 | CI                           | Public runners work        | Needs a licensed CI       |
-| Style                        | Jane Street (Base + ppx_jane) | Stdlib-only            |
+
+Pick highs for classical LP/MIP. Pick hexaly if you need scheduling,
+routing, or the combinatorial variable types.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the extension recipe.
+Adding a new HiGHS entry point is three edits since there's no C++
+shim in between.
 
 ## License
 
